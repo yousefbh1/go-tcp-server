@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 )
 
 func main() {
@@ -16,19 +20,39 @@ func main() {
 	defer ln.Close()
 
 	log.Printf("echo server listening on: %v", ln.Addr())
+	// track active connections
+	var wg sync.WaitGroup
+
+	// signal handler
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("shutdown signal received - closing listener")
+		ln.Close()
+	}()
+
 	// continuously listen for incoming connections
+acceptLoop:
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("accept error: %v", err)
-			continue
-		} else {
-			log.Printf("accepted connection: %s", conn.RemoteAddr())
+			break acceptLoop
 		}
+		log.Printf("accepted connection: %s", conn.RemoteAddr())
+
 		// handle connection concurrently
-		go handleConn(conn)
+		wg.Add(1)
+		go func(c net.Conn) {
+			defer wg.Done()
+			handleConn(c)
+		}(conn)
 	}
 
+	log.Println("waiting for active connections to finish")
+	wg.Wait()
+	log.Println("server exiting")
 }
 
 func handleConn(conn net.Conn) {
@@ -43,7 +67,9 @@ func handleConn(conn net.Conn) {
 			return
 		}
 
+		// write back to the connected client
 		_, err = conn.Write([]byte(fmt.Sprintf("Echo: %s", line)))
+		// log in the server
 		log.Printf("received from %s: %s", conn.RemoteAddr(), line)
 		if err != nil {
 			log.Printf("write error to %s: %v", conn.RemoteAddr(), err)
